@@ -12,7 +12,7 @@ conda install -y rdkit -c conda-forge
 
 
 ## Data:
-Download the raw reaction dataset from [here](https://drive.google.com/drive/folders/1tpeOx2R_sUU0KhwnaLpyIy1iFtDifAGM?usp=sharing) and put it into your data directory.
+Download the raw reaction dataset from [here](https://drive.google.com/drive/folders/1tpeOx2R_sUU0KhwnaLpyIy1iFtDifAGM?usp=sharing) or [Dai et al.](https://github.com/Hanjun-Dai/GLN) and put it into your data directory.
 
 ## Train:
 One can specify different model and training configurations in `train.sh`. Below is a sample code that calls `train.py`. Simply run `./start.sh` for training.
