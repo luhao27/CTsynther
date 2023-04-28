@@ -40,7 +40,7 @@ python train.py \
 ## Test:
 One can specify different translate configurations in `test.sh` as the sample code below.
 
-To replicate our results, download the pre-trained checkpoints from [GoogleDrive](https://drive.google.com/drive/folders/1tpeOx2R_sUU0KhwnaLpyIy1iFtDifAGM?usp=sharing).
+To replicate our results, download the pre-trained checkpoints from [here](https://drive.google.com/file/d/1FM-QtH2Bqy2VKT9eLgbgPvzsjWOWdmmR/view?usp=sharing).
 
 
 ```
@@ -54,8 +54,8 @@ python test.py \
   --checkpoint <target_checkpoint> \
   --known_class False \
   --beam_size 10 \
-  --stepwise False \
+  --search_strategy False \
 ```
 
-node: 
+Node: 
 Our code was developed with reference to the code written by [Wan et al.](https://proceedings.mlr.press/v162/wan22a.html), and we would like to express our gratitude to them.
