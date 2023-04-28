@@ -58,4 +58,4 @@ python test.py \
 ```
 
 node: 
-Our code was developed with reference to the code written by [Wan et al.]{https://proceedings.mlr.press/v162/wan22a.html}, and we would like to express our gratitude to them.
+Our code was developed with reference to the code written by [Wan et al.](https://proceedings.mlr.press/v162/wan22a.html), and we would like to express our gratitude to them.
