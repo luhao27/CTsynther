@@ -5,7 +5,7 @@ Implementation of CTsynther: Contrastive Transformer Model for Single-step Retro
 Follow the below steps for dependency installation:
 ```
 conda create -y -n CTsynther tqdm
-conda activate retroformer
+conda activate CTsynther
 conda install pytorch==1.13.0 torchvision==0.14.0 torchaudio==0.13.0 -c pytorch
 conda install -y rdkit -c conda-forge
 ```
@@ -23,29 +23,28 @@ python train.py \
   --encoder_num_layers 8 \
   --decoder_num_layers 8 \
   --heads 8 \
-  --max_step 100000 \
+  --max_step 900000 \
   --batch_size_token 4096 \
-  --save_per_step 2500 \
+  --save_per_step 5000 \
   --val_per_step 2500 \
   --report_per_step 200 \
   --device cuda \
-  --known_class False \
   --shared_vocab True \
   --shared_encoder False \
-  --data_dir <data_folder> \
-  --intermediate_dir <intermediate_folder> \
-  --checkpoint_dir <checkpoint_folder> \
-  --checkpoint <previous_checkpoint> 
+  --data_dir <your_data_folder> \
+  --intermediate_dir <your_vocab_folder> \
+  --checkpoint_dir <your_checkpoint_folder> \
+  --checkpoint <your_previous_checkpoint> 
 ```
 
 ## Test:
-One can specify different translate configurations in `translate.sh` as the sample code below. Simply sun `./translate.sh` for inference. 
+One can specify different translate configurations in `test.sh` as the sample code below.
 
 To replicate our results, download the pre-trained checkpoints from [GoogleDrive](https://drive.google.com/drive/folders/1tpeOx2R_sUU0KhwnaLpyIy1iFtDifAGM?usp=sharing).
 
 
 ```
-python translate.py \
+python test.py \
   --batch_size_val 8 \
   --shared_vocab True \
   --shared_encoder False \
@@ -58,21 +57,5 @@ python translate.py \
   --stepwise False \
 ```
 
-## Reference:
-
-If you find our work useful, please cite by:
-```
-@InProceedings{pmlr-v162-wan22a,
-  title = {Retroformer: Pushing the Limits of End-to-end Retrosynthesis Transformer},
-  author = {Wan, Yue and Hsieh, Chang-Yu and Liao, Ben and Zhang, Shengyu},
-  booktitle = {Proceedings of the 39th International Conference on Machine Learning},
-  pages = {22475--22490},
-  year = {2022},
-  volume = {162},
-  series = {Proceedings of Machine Learning Research},
-  month = {17--23 Jul},
-  publisher = {PMLR},
-  pdf = {https://proceedings.mlr.press/v162/wan22a/wan22a.pdf},
-  url = {https://proceedings.mlr.press/v162/wan22a.html}
-}
-```
+node: 
+Our code was developed with reference to the code written by [Wan et al.]{https://proceedings.mlr.press/v162/wan22a.html}, and we would like to express our gratitude to them.
