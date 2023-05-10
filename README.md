@@ -49,9 +49,9 @@ python test.py \
   --shared_vocab True \
   --shared_encoder False \
   --data_dir <data_folder> \
-  --intermediate_dir <intermediate_folder> \
-  --checkpoint_dir <checkpoint_folder> \
-  --checkpoint <target_checkpoint> \
+  --intermediate_dir <your_intermediate_folder> \
+  --checkpoint_dir <your_checkpoint_folder> \
+  --checkpoint <your_target_checkpoint> \
   --known_class False \
   --beam_size 10 \
   --search_strategy False \
