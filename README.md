@@ -1,5 +1,5 @@
 # CTsynther
-Implementation of CTsynther: Contrastive Transformer Model for Single-step Retrosynthesis Prediction
+Implementation of CTsynther: Contrastive Transformer Model for End-to-end Retrosynthesis Prediction
 
 ## Dependency:
 Follow the below steps for dependency installation:
