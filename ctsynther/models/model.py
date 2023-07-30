@@ -3,218 +3,104 @@ from __future__ import absolute_import
 from __future__ import division
 
 
-import random
-from retroformer.utils.my_utils import my_parse_smi
-
-
-from functools import partial
-import os
-import numpy as np
+import math
 import torch
-from torch.utils.data import DataLoader
-from retroformer.dataset import RetroDataset
-from retroformer.models.model import RetroModel
+import torch.nn as nn
+import numpy as np
+
+from retroformer.models.encoder import TransformerEncoder
+from retroformer.models.decoder import TransformerDecoder
+from retroformer.models.embedding import Embedding
+from retroformer.models.module import MultiHeadedAttention
 
 
-def load_checkpoint(args, model):
-    checkpoint_path = os.path.join(args.checkpoint_dir, args.checkpoint)
-    print('Loading checkpoint from {}'.format(checkpoint_path))
-    checkpoint = torch.load(checkpoint_path)
-    model.load_state_dict(checkpoint['model'])
-    optimizer = checkpoint['optim']
-    step = checkpoint['step']
-    step += 1
-    return step, optimizer, model.to(args.device)
+class RetroModel(nn.Module):
+    def __init__(self, encoder_num_layers, decoder_num_layers, d_model, heads, d_ff, dropout,
+                 vocab_size_src, vocab_size_tgt, shared_vocab, num_bonds=5, shared_encoder=False, src_pad_idx=1,
+                 tgt_pad_idx=1):
+        super(RetroModel, self).__init__()
+        self.encoder_num_layers = encoder_num_layers
+        self.decoder_num_layers = decoder_num_layers
+        self.d_model = d_model
+        self.heads = heads
+        self.d_ff = d_ff
+        self.dropout = dropout
+        self.shared_vocab = shared_vocab
+        self.shared_encoder = shared_encoder
+        if shared_vocab:
+            assert vocab_size_src == vocab_size_tgt and src_pad_idx == tgt_pad_idx
+            self.embedding_src = self.embedding_tgt = Embedding(vocab_size=vocab_size_src + 1, embed_size=d_model,
+                                                                padding_idx=src_pad_idx)
+        else:
+            self.embedding_src = Embedding(vocab_size=vocab_size_src + 1, embed_size=d_model, padding_idx=src_pad_idx)
+            self.embedding_tgt = Embedding(vocab_size=vocab_size_tgt + 1, embed_size=d_model, padding_idx=tgt_pad_idx)
 
+        self.embedding_bond = nn.Linear(7, d_model)
 
-def build_model(args, vocab_itos_src, vocab_itos_tgt):
-    src_pad_idx = np.argwhere(np.array(vocab_itos_src) == '<pad>')[0][0]
-    tgt_pad_idx = np.argwhere(np.array(vocab_itos_tgt) == '<pad>')[0][0]
+        multihead_attn_modules_en = nn.ModuleList(
+            [MultiHeadedAttention(heads, d_model, dropout=dropout)
+             for _ in range(encoder_num_layers)])
+        if shared_encoder:
+            assert encoder_num_layers == decoder_num_layers
+            multihead_attn_modules_de = multihead_attn_modules_en
+        else:
+            multihead_attn_modules_de = nn.ModuleList(
+                [MultiHeadedAttention(heads, d_model, dropout=dropout)
+                 for _ in range(decoder_num_layers)])
 
-    model = RetroModel(
-        encoder_num_layers=args.encoder_num_layers,
-        decoder_num_layers=args.decoder_num_layers,
-        d_model=args.d_model, heads=args.heads, d_ff=args.d_ff, dropout=args.dropout,
-        vocab_size_src=len(vocab_itos_src), vocab_size_tgt=len(vocab_itos_tgt),
-        shared_vocab=args.shared_vocab == 'True', shared_encoder=args.shared_encoder == 'True',
-        src_pad_idx=src_pad_idx, tgt_pad_idx=tgt_pad_idx)
+        self.encoder = TransformerEncoder(num_layers=encoder_num_layers,
+                                          d_model=d_model, heads=heads,
+                                          d_ff=d_ff, dropout=dropout,
+                                          embeddings=self.embedding_src,
+                                          embeddings_bond=self.embedding_bond,
+                                          attn_modules=multihead_attn_modules_en)
 
-    return model.to(args.device)
+        self.decoder = TransformerDecoder(num_layers=decoder_num_layers,
+                                          d_model=d_model, heads=heads,
+                                          d_ff=d_ff, dropout=dropout,
+                                          embeddings=self.embedding_tgt,
+                                          self_attn_modules=multihead_attn_modules_de)
 
+        self.atom_rc_identifier = nn.Sequential(nn.Linear(d_model, 1),
+                                                nn.Sigmoid())
+        self.bond_rc_identifier = nn.Sequential(nn.Linear(d_model, 1),
+                                                nn.Sigmoid())
 
-def build_iterator(args, train=True, sample=False, augment=False):
-    if train:
-        dataset = RetroDataset(mode='train', data_folder=args.data_dir,
-                               intermediate_folder=args.intermediate_dir,
-                               known_class=args.known_class == 'True',
-                               shared_vocab=args.shared_vocab == 'True', sample=sample, augment=augment)
-        dataset_val = RetroDataset(mode='val', data_folder=args.data_dir,
-                                   intermediate_folder=args.intermediate_dir,
-                                   known_class=args.known_class == 'True',
-                                   shared_vocab=args.shared_vocab == 'True', sample=sample)
-        src_pad, tgt_pad = dataset.src_stoi['<pad>'], dataset.tgt_stoi['<pad>']
-        train_iter = DataLoader(dataset, batch_size=args.batch_size_trn, shuffle=not sample,  # num_workers=8,
-                                collate_fn=partial(collate_fn, src_pad=src_pad, tgt_pad=tgt_pad, device=args.device))
-        val_iter = DataLoader(dataset_val, batch_size=args.batch_size_val, shuffle=False,  # num_workers=8,
-                              collate_fn=partial(collate_fn, src_pad=src_pad, tgt_pad=tgt_pad, device=args.device))
-        return train_iter, val_iter, dataset.src_itos, dataset.tgt_itos
+        self.generator = nn.Sequential(nn.Linear(d_model, vocab_size_tgt),
+                                       nn.LogSoftmax(dim=-1))
 
-    else:
-        dataset = RetroDataset(mode='test', data_folder=args.data_dir,
-                               intermediate_folder=args.intermediate_dir,
-                               known_class=args.known_class == 'True',
-                               shared_vocab=args.shared_vocab == 'True')
-        src_pad, tgt_pad = dataset.src_stoi['<pad>'], dataset.tgt_stoi['<pad>']
-        test_iter = DataLoader(dataset, batch_size=args.batch_size_val, shuffle=False,  # num_workers=8,
-                               collate_fn=partial(collate_fn, src_pad=src_pad, tgt_pad=tgt_pad, device=args.device, mode="test"))
-        # luhao add                         
-        # collate_fn=partial(collate_fn, src_pad=src_pad, tgt_pad=tgt_pad, device=args.device, mode="test"))
-        return test_iter, dataset
-
-def collate_fn(data, src_pad, tgt_pad, device='cuda', mode = "train"):
-    """Build mini-batch tensors:
-    :param sep: (int) index of src seperator
-    :param pads: (tuple) index of src and tgt padding
-    """
-    # Sort a data list by caption length
-    # data.sort(key=lambda x: len(x[0]), reverse=True)
+        self.softmax = nn.Softmax(dim=-1)
     
+        self.cont_identifier = nn.Sequential(nn.Linear(d_model, 1),
+                                                nn.Sigmoid())
 
-    # test
-    if mode=='test':
-        src, src_graph, tgt, alignment, nonreactive_mask, my_file = zip(*data)
-        max_src_length = max([len(s) for s in src])
-        max_tgt_length = max([len(t) for t in tgt])
+    def forward(self, src, tgt, bond=None, teacher_mask=None):
+        encoder_out, edge_feature = self.encoder(src, bond)
 
-        anchor = torch.zeros([], device=device)
+        atom_rc_scores = self.atom_rc_identifier(encoder_out)
+        bond_rc_scores = self.bond_rc_identifier(edge_feature) if edge_feature is not None else None
+        
+        cont = self.cont_identifier(encoder_out[1:, :, :]).squeeze() 
+        
+        if teacher_mask is None:  # Naive Inference
+            student_mask = self.infer_reaction_center_mask(bond, atom_rc_scores, bond_rc_scores)
+            decoder_out, top_aligns = self.decoder(src, tgt[:-1], encoder_out, student_mask.clone())
+        else:  # Training
+            decoder_out, top_aligns = self.decoder(src, tgt[:-1], encoder_out, teacher_mask.clone())
 
-        # Graph structure with edge attributes
-        new_bond_matrix = anchor.new_zeros((len(data), max_src_length, max_src_length, 7), dtype=torch.long)
+        generative_scores = self.generator(decoder_out)
+        return generative_scores, atom_rc_scores, bond_rc_scores, top_aligns, cont
 
-        # Pad_sequence
-        new_src = anchor.new_full((max_src_length, len(data)), src_pad, dtype=torch.long)
-        new_tgt = anchor.new_full((max_tgt_length, len(data)), tgt_pad, dtype=torch.long)
-        new_alignment = anchor.new_zeros((len(data), max_tgt_length - 1, max_src_length), dtype=torch.float)
-        new_nonreactive_mask = anchor.new_ones((max_src_length, len(data)), dtype=torch.bool)
+    @staticmethod
+    def infer_reaction_center_mask(bond, atom_rc_scores, bond_rc_scores=None):
+        atom_rc_scores = atom_rc_scores.squeeze(2)
+        if bond_rc_scores is not None:
+            bond_rc_scores = bond_rc_scores.squeeze(1)
+            bond_indicator = torch.zeros((bond.shape[0], bond.shape[1], bond.shape[2])).bool().to(bond.device)
+            bond_indicator[bond.sum(-1) > 0] = (bond_rc_scores > 0.5)
 
-        for i in range(len(data)):
-            new_src[:, i][:len(src[i])] = torch.LongTensor(src[i])
-            new_nonreactive_mask[:, i][:len(nonreactive_mask[i])] = torch.BoolTensor(nonreactive_mask[i])
-            new_tgt[:, i][:len(tgt[i])] = torch.LongTensor(tgt[i])
-            new_alignment[i, :alignment[i].shape[0], :alignment[i].shape[1]] = alignment[i].float()
-
-            full_adj_matrix = torch.from_numpy(src_graph[i].full_adjacency_tensor)
-            new_bond_matrix[i, 1:full_adj_matrix.shape[0]+1, 1:full_adj_matrix.shape[1]+1] = full_adj_matrix
-    
-        # luhao add
-        return new_src, new_tgt, new_alignment, new_nonreactive_mask, (new_bond_matrix, src_graph), False
-
-
-
-    # luhao add
-    src, src_graph, tgt, alignment, nonreactive_mask, my_file = zip(*data)
-    max_src_length = max([len(s) for s in src])
-    max_tgt_length = max([len(t) for t in tgt])
-
-    """important!!!! 修改参数"""
-    batch_size_trn = len(src)
-    known_class = False
-    intermediate_dir = './intermediate'
-    p_num = 3
-
-    # turple --> list
-    src = list(src)
-    src_graph = list(src_graph)
-    tgt = list(tgt)
-    alignment = list(alignment)
-    nonreactive_mask = list(nonreactive_mask)
-
-    # quit()
-    index = random.randint(0, batch_size_trn-1)
-    prod, react, rt = my_file[index]
-    
-    cont_label = [0 for _ in range (batch_size_trn)]
-    cont_label[index] = 1
-    
-    add_src, add_src_graph, add_tgt, add_alignment, add_nonreactive_mask = src, src_graph, tgt, alignment, nonreactive_mask   
-    for i in range(p_num):
-        new_src, new_src_graph, new_tgt, new_alignment, new_nonreactive_mask = my_parse_smi(prod, react, rt, randomize=True, 
-            intermediate_folder=intermediate_dir, vocab_file = 'vocab_share.pk', known_class=known_class, max_src_length= max_src_length, max_tgt_length= max_tgt_length)
-
-        pos = random.randint(0, batch_size_trn-1)
-        # print(pos)
-        src.insert(pos, new_src)
-        src_graph.insert(pos, new_src_graph)
-        tgt.insert(pos, new_tgt)
-        alignment.insert(pos, new_alignment)
-        nonreactive_mask.insert(pos, new_nonreactive_mask)
-        cont_label.insert(pos, 1)
-     
-    # list --> tuple
-    src = tuple(src)
-    src_graph = tuple(src_graph)
-    tgt = tuple(tgt)
-    alignment = tuple(alignment)
-    nonreactive_mask = tuple(nonreactive_mask)
-    
-    cont_label = torch.tensor(cont_label) 
-    # print(cont_label)
-
-    max_src_length = max([len(s) for s in src])
-    max_tgt_length = max([len(t) for t in tgt])
-
-    anchor = torch.zeros([], device=device)
-
-    # Graph structure with edge attributes
-    new_bond_matrix = anchor.new_zeros((len(data)+p_num, max_src_length, max_src_length, 7), dtype=torch.long)
-
-    # Pad_sequence
-    new_src = anchor.new_full((max_src_length, len(data)+p_num), src_pad, dtype=torch.long)
-    new_tgt = anchor.new_full((max_tgt_length, len(data)+p_num), tgt_pad, dtype=torch.long)
-    new_alignment = anchor.new_zeros((len(data)+p_num, max_tgt_length - 1, max_src_length), dtype=torch.float)
-    new_nonreactive_mask = anchor.new_ones((max_src_length, len(data)+p_num), dtype=torch.bool)
-
-    for i in range(len(data)+p_num):
-        new_src[:, i][:len(src[i])] = torch.LongTensor(src[i])
-        new_nonreactive_mask[:, i][:len(nonreactive_mask[i])] = torch.BoolTensor(nonreactive_mask[i])
-        new_tgt[:, i][:len(tgt[i])] = torch.LongTensor(tgt[i])
-        new_alignment[i, :alignment[i].shape[0], :alignment[i].shape[1]] = alignment[i].float()
-
-        full_adj_matrix = torch.from_numpy(src_graph[i].full_adjacency_tensor)
-        new_bond_matrix[i, 1:full_adj_matrix.shape[0]+1, 1:full_adj_matrix.shape[1]+1] = full_adj_matrix
-    
-    return new_src, new_tgt, new_alignment, new_nonreactive_mask, (new_bond_matrix, src_graph), cont_label
-
-
-def accumulate_batch(true_batch, src_pad=1, tgt_pad=1):
-    src_max_length, tgt_max_length, entry_count = 0, 0, 0
-    batch_size = true_batch[0][0].shape[1]
-    for batch in true_batch:
-        src, tgt, _, _, _ = batch
-        src_max_length = max(src.shape[0], src_max_length)
-        tgt_max_length = max(tgt.shape[0], tgt_max_length)
-        entry_count += tgt.shape[1]
-
-    new_src = torch.zeros((src_max_length, entry_count)).fill_(src_pad).long()
-    new_tgt = torch.zeros((tgt_max_length, entry_count)).fill_(tgt_pad).long()
-
-    new_context_alignment = torch.zeros((entry_count, tgt_max_length - 1, src_max_length)).float()
-    new_nonreactive_mask = torch.ones((src_max_length, entry_count)).bool()
-
-    # Graph packs:
-    new_bond_matrix = torch.zeros((entry_count, src_max_length, src_max_length, 7)).long()
-    new_src_graph_list = []
-
-    for i in range(len(true_batch)):
-        src, tgt, context_alignment, nonreactive_mask, graph_packs = true_batch[i]
-        bond, src_graph = graph_packs
-        new_src[:, batch_size * i: batch_size * (i + 1)][:src.shape[0]] = src
-        new_nonreactive_mask[:, batch_size * i: batch_size * (i + 1)][:nonreactive_mask.shape[0]] = nonreactive_mask
-        new_tgt[:, batch_size * i: batch_size * (i + 1)][:tgt.shape[0]] = tgt
-        new_context_alignment[batch_size * i: batch_size * (i + 1), :context_alignment.shape[1], :context_alignment.shape[2]] = context_alignment
-
-        new_bond_matrix[batch_size * i: batch_size * (i + 1), :bond.shape[1], :bond.shape[2]] = bond
-        new_src_graph_list += src_graph
-
-    return new_src, new_tgt, new_context_alignment, new_nonreactive_mask, \
-           (new_bond_matrix, new_src_graph_list)
+            result = (~(bond_indicator.sum(dim=1).bool()) + ~(bond_indicator.sum(dim=2).bool()) +
+                      (atom_rc_scores.transpose(0, 1) < 0.5)).transpose(0, 1)
+        else:
+            result = (atom_rc_scores.transpose(0, 1) < 0.5).transpose(0, 1)
+        return result
