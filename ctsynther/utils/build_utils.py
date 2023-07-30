@@ -2,20 +2,18 @@ from __future__ import print_function
 from __future__ import absolute_import
 from __future__ import division
 
+# luhao add
 import random
-import pickle
-from rdkit import Chem
-from ctsynther.utils.smiles_utils import smi_tokenizer, clear_map_number, SmilesGraph
-from ctsynther.utils.smiles_utils import canonical_smiles, canonical_smiles_with_am, remove_am_without_canonical, \
-    extract_relative_mapping, get_nonreactive_mask, randomize_smiles_with_am
+from retroformer.utils.my_utils import my_parse_smi
+
 
 from functools import partial
 import os
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from ctsynther.dataset import RetroDataset
-from ctsynther.models.model import RetroModel
+from retroformer.dataset import RetroDataset
+from retroformer.models.model import RetroModel
 
 
 def load_checkpoint(args, model):
@@ -46,7 +44,6 @@ def build_model(args, vocab_itos_src, vocab_itos_tgt):
 
 def build_iterator(args, train=True, sample=False, augment=False):
     if train:
-        # dataset
         dataset = RetroDataset(mode='train', data_folder=args.data_dir,
                                intermediate_folder=args.intermediate_dir,
                                known_class=args.known_class == 'True',
@@ -55,16 +52,11 @@ def build_iterator(args, train=True, sample=False, augment=False):
                                    intermediate_folder=args.intermediate_dir,
                                    known_class=args.known_class == 'True',
                                    shared_vocab=args.shared_vocab == 'True', sample=sample)
-        
         src_pad, tgt_pad = dataset.src_stoi['<pad>'], dataset.tgt_stoi['<pad>']
-
-        # dataloader
-        train_iter = DataLoader(dataset, batch_size=args.batch_size_trn_nag, shuffle=not sample,  # num_workers=8,
-                                collate_fn=partial(collate_fn, src_pad=src_pad, tgt_pad=tgt_pad, device=args.device, num_pos=args.batch_size_trn_pos))
-
+        train_iter = DataLoader(dataset, batch_size=args.batch_size_trn, shuffle=not sample,  # num_workers=8,
+                                collate_fn=partial(collate_fn, src_pad=src_pad, tgt_pad=tgt_pad, device=args.device))
         val_iter = DataLoader(dataset_val, batch_size=args.batch_size_val, shuffle=False,  # num_workers=8,
                               collate_fn=partial(collate_fn, src_pad=src_pad, tgt_pad=tgt_pad, device=args.device))
-
         return train_iter, val_iter, dataset.src_itos, dataset.tgt_itos
 
     else:
@@ -74,94 +66,24 @@ def build_iterator(args, train=True, sample=False, augment=False):
                                shared_vocab=args.shared_vocab == 'True')
         src_pad, tgt_pad = dataset.src_stoi['<pad>'], dataset.tgt_stoi['<pad>']
         test_iter = DataLoader(dataset, batch_size=args.batch_size_val, shuffle=False,  # num_workers=8,
-            collate_fn=partial(collate_fn, src_pad=src_pad, tgt_pad=tgt_pad, device=args.device, mode='test'))
-                               # collate_fn=partial(collate_fn, src_pad=src_pad, tgt_pad=tgt_pad, device=args.device))
+                               collate_fn=partial(collate_fn, src_pad=src_pad, tgt_pad=tgt_pad, device=args.device, mode="test"))
+        # luhao add                         
+        # collate_fn=partial(collate_fn, src_pad=src_pad, tgt_pad=tgt_pad, device=args.device, mode="test"))
         return test_iter, dataset
 
 
-
-
-def cont_parse_smi(prod, reacts, react_class, build_vocab=False, randomize=False, intermediate_folder=None, 
-    vocab_file=None, known_class=False, max_src_length = 0, max_tgt_length=0):
-        ''' Process raw atom-mapped product and reactants into model-ready inputs
-        :param prod: atom-mapped product
-        :param reacts: atom-mapped reactants
-        :param react_class: reaction class
-        :param build_vocab: whether it is the stage of vocab building
-        :param randomize: whether do random permutation of the reaction smiles
-        :return:
-        '''
-
-        with open(os.path.join(intermediate_folder, vocab_file), 'rb') as f:
-                    src_itos, tgt_itos = pickle.load(f)
-        src_stoi = {src_itos[i]: i for i in range(len(src_itos))}
-        tgt_stoi = {tgt_itos[i]: i for i in range(len(tgt_itos))}
-
-
-        # Process raw prod and reacts:
-        cano_prod_am = canonical_smiles_with_am(prod)
-        cano_reacts_am = canonical_smiles_with_am(reacts)
-
-        cano_prod = clear_map_number(prod)
-        cano_reacts = remove_am_without_canonical(cano_reacts_am)
-
-        if build_vocab:
-            return cano_prod, cano_reacts
-
-        if Chem.MolFromSmiles(cano_reacts) is None:
-            cano_reacts = clear_map_number(reacts)
-
-        if Chem.MolFromSmiles(cano_prod) is None or Chem.MolFromSmiles(cano_reacts) is None:
-            return None
-
-        if randomize:
-            # print('permute product')
-            cano_prod_am = randomize_smiles_with_am(prod)
-            cano_prod = remove_am_without_canonical(cano_prod_am)
-            if np.random.rand() > 0.5:
-                # print('permute reacts')
-                cano_reacts_am = '.'.join(cano_reacts_am.split('.')[::-1])
-                cano_reacts = remove_am_without_canonical(cano_reacts_am)
-
-        # Get the smiles graph
-        smiles_graph = SmilesGraph(cano_prod)
-        # Get the nonreactive masking based on atom-mapping
-        gt_nonreactive_mask = get_nonreactive_mask(cano_prod_am, prod, reacts, radius=1)
-        # Get the context alignment based on atom-mapping
-        position_mapping_list = extract_relative_mapping(cano_prod_am, cano_reacts_am)
-
-        # Note: gt_context_attn.size(0) = tgt.size(0) - 1; attention for token that need to predict
-        gt_context_attn = torch.zeros(
-            (len(smi_tokenizer(cano_reacts_am)) + 1, len(smi_tokenizer(cano_prod_am)) + 1)).long()
-        for i, j in position_mapping_list:
-            gt_context_attn[i][j + 1] = 1
-
-        # Prepare model inputs
-        src_token = smi_tokenizer(cano_prod)
-        tgt_token = ['<sos>'] + smi_tokenizer(cano_reacts) + ['<eos>']
-        if known_class:
-            src_token = [react_class] + src_token
-        else:
-            src_token = ['<UNK>'] + src_token
-        gt_nonreactive_mask = [True] + gt_nonreactive_mask
-
-        src_token = [src_stoi.get(st, src_stoi['<unk>']) for st in src_token]
-        tgt_token = [tgt_stoi.get(tt, tgt_stoi['<unk>']) for tt in tgt_token]
-         
-        
-        return src_token, smiles_graph, tgt_token, gt_context_attn, gt_nonreactive_mask
-
-
-
-def collate_fn(data, src_pad, tgt_pad, device='cuda', mode="train", num_pos=3):
+# luhao add
+def collate_fn(data, src_pad, tgt_pad, device='cuda', mode = "train"):
     """Build mini-batch tensors:
     :param sep: (int) index of src seperator
     :param pads: (tuple) index of src and tgt padding
     """
     # Sort a data list by caption length
     # data.sort(key=lambda x: len(x[0]), reverse=True)
+    
 
-    if mode=='test' :
+    # test
+    if mode=='test':
         src, src_graph, tgt, alignment, nonreactive_mask, my_file = zip(*data)
         max_src_length = max([len(s) for s in src])
         max_tgt_length = max([len(t) for t in tgt])
@@ -179,28 +101,29 @@ def collate_fn(data, src_pad, tgt_pad, device='cuda', mode="train", num_pos=3):
 
         for i in range(len(data)):
             new_src[:, i][:len(src[i])] = torch.LongTensor(src[i])
-            # new_nonreactive_mask[:, i][:len(nonreactive_mask[i])] = torch.BoolTensor(nonreactive_mask[i])
+            new_nonreactive_mask[:, i][:len(nonreactive_mask[i])] = torch.BoolTensor(nonreactive_mask[i])
             new_tgt[:, i][:len(tgt[i])] = torch.LongTensor(tgt[i])
             new_alignment[i, :alignment[i].shape[0], :alignment[i].shape[1]] = alignment[i].float()
 
             full_adj_matrix = torch.from_numpy(src_graph[i].full_adjacency_tensor)
             new_bond_matrix[i, 1:full_adj_matrix.shape[0]+1, 1:full_adj_matrix.shape[1]+1] = full_adj_matrix
     
+        # luhao add
         return new_src, new_tgt, new_alignment, new_nonreactive_mask, (new_bond_matrix, src_graph), False
 
-    
 
-    # this is train and val
+
+    # luhao add
     src, src_graph, tgt, alignment, nonreactive_mask, my_file = zip(*data)
     max_src_length = max([len(s) for s in src])
     max_tgt_length = max([len(t) for t in tgt])
 
-    """important!"""
+    """important!!!! 修改参数"""
+   
     batch_size_trn = len(src)
     known_class = False
     intermediate_dir = './intermediate'
-    p_num = num_pos
-    """important!"""
+    p_num = 3
 
     # turple --> list
     src = list(src)
@@ -219,9 +142,10 @@ def collate_fn(data, src_pad, tgt_pad, device='cuda', mode="train", num_pos=3):
     
     add_src, add_src_graph, add_tgt, add_alignment, add_nonreactive_mask = src, src_graph, tgt, alignment, nonreactive_mask   
     for i in range(p_num):
-        new_src, new_src_graph, new_tgt, new_alignment, new_nonreactive_mask = cont_parse_smi(prod, react, rt, randomize=True, 
+        new_src, new_src_graph, new_tgt, new_alignment, new_nonreactive_mask = my_parse_smi(prod, react, rt, randomize=True, 
             intermediate_folder=intermediate_dir, vocab_file = 'vocab_share.pk', known_class=known_class, max_src_length= max_src_length, max_tgt_length= max_tgt_length)
-            # print(new_src)
+        
+
         pos = random.randint(0, batch_size_trn-1)
         # print(pos)
         src.insert(pos, new_src)
@@ -241,6 +165,7 @@ def collate_fn(data, src_pad, tgt_pad, device='cuda', mode="train", num_pos=3):
     cont_label = torch.tensor(cont_label) 
     # print(cont_label)
 
+   
     max_src_length = max([len(s) for s in src])
     max_tgt_length = max([len(t) for t in tgt])
 
@@ -264,4 +189,41 @@ def collate_fn(data, src_pad, tgt_pad, device='cuda', mode="train", num_pos=3):
         full_adj_matrix = torch.from_numpy(src_graph[i].full_adjacency_tensor)
         new_bond_matrix[i, 1:full_adj_matrix.shape[0]+1, 1:full_adj_matrix.shape[1]+1] = full_adj_matrix
     
+    # luhao add
     return new_src, new_tgt, new_alignment, new_nonreactive_mask, (new_bond_matrix, src_graph), cont_label
+    
+
+
+def accumulate_batch(true_batch, src_pad=1, tgt_pad=1):
+    src_max_length, tgt_max_length, entry_count = 0, 0, 0
+    batch_size = true_batch[0][0].shape[1]
+    for batch in true_batch:
+        src, tgt, _, _, _ = batch
+        src_max_length = max(src.shape[0], src_max_length)
+        tgt_max_length = max(tgt.shape[0], tgt_max_length)
+        entry_count += tgt.shape[1]
+
+    new_src = torch.zeros((src_max_length, entry_count)).fill_(src_pad).long()
+    new_tgt = torch.zeros((tgt_max_length, entry_count)).fill_(tgt_pad).long()
+
+    new_context_alignment = torch.zeros((entry_count, tgt_max_length - 1, src_max_length)).float()
+    new_nonreactive_mask = torch.ones((src_max_length, entry_count)).bool()
+
+    # Graph packs:
+    new_bond_matrix = torch.zeros((entry_count, src_max_length, src_max_length, 7)).long()
+    new_src_graph_list = []
+
+    for i in range(len(true_batch)):
+        src, tgt, context_alignment, nonreactive_mask, graph_packs = true_batch[i]
+        bond, src_graph = graph_packs
+        new_src[:, batch_size * i: batch_size * (i + 1)][:src.shape[0]] = src
+        new_nonreactive_mask[:, batch_size * i: batch_size * (i + 1)][:nonreactive_mask.shape[0]] = nonreactive_mask
+        new_tgt[:, batch_size * i: batch_size * (i + 1)][:tgt.shape[0]] = tgt
+        new_context_alignment[batch_size * i: batch_size * (i + 1), :context_alignment.shape[1], :context_alignment.shape[2]] = context_alignment
+
+        new_bond_matrix[batch_size * i: batch_size * (i + 1), :bond.shape[1], :bond.shape[2]] = bond
+        new_src_graph_list += src_graph
+
+    return new_src, new_tgt, new_context_alignment, new_nonreactive_mask, \
+           (new_bond_matrix, new_src_graph_list)
+
